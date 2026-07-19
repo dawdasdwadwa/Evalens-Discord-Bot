@@ -4,9 +4,10 @@
 
 import io
 import os
+import random
 import re
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 FONTS_DIR = os.path.dirname(os.path.abspath(__file__))  # шрифты лежат рядом с этим файлом
 
@@ -71,6 +72,59 @@ def _circle_mask(size: int) -> Image.Image:
     return mask
 
 
+def _generate_glow_background(width: int, height: int, seed: int | None = None) -> Image.Image:
+    """Чёрный фон со светящимися 'потёками'-штрихами по краям — в стиле
+    неонового grunge-эффекта (как на панели верификации). Штрихи разведены
+    по краям/углам, а центр слегка затемнён виньеткой, чтобы аватар и текст
+    поверх фона оставались хорошо читаемыми."""
+    rng = random.Random(seed)
+    base = Image.new("RGBA", (width, height), (0, 0, 0, 255))
+
+    corners = [
+        (0, 0), (width, 0), (0, height), (width, height),
+        (width // 2, 0), (0, height // 2), (width, height // 2), (width // 2, height),
+    ]
+
+    # широкий мягкий ореол свечения
+    halo_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    halo_draw = ImageDraw.Draw(halo_layer)
+    strokes = []
+    num_strokes = rng.randint(6, 8)
+    for _ in range(num_strokes):
+        cx, cy = rng.choice(corners)
+        x0 = cx + rng.randint(-80, 80)
+        y0 = cy + rng.randint(-80, 80)
+        points = [(x0, y0)]
+        for _ in range(rng.randint(3, 4)):
+            last_x, last_y = points[-1]
+            points.append((last_x + rng.randint(-160, 160), last_y + rng.randint(-120, 120)))
+        strokes.append(points)
+        halo_draw.line(points, fill=(255, 255, 255, 190), width=rng.randint(28, 46), joint="curve")
+    halo_layer = halo_layer.filter(ImageFilter.GaussianBlur(36))
+    base.alpha_composite(halo_layer)
+
+    # тонкие рваные штрихи поверх ореола — деталь в духе "царапин"
+    scratch_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    scratch_draw = ImageDraw.Draw(scratch_layer)
+    for points in strokes:
+        for _ in range(rng.randint(2, 3)):
+            jittered = [(x + rng.randint(-12, 12), y + rng.randint(-12, 12)) for x, y in points]
+            scratch_draw.line(jittered, fill=(255, 255, 255, rng.randint(110, 170)), width=rng.randint(2, 4), joint="curve")
+    scratch_layer = scratch_layer.filter(ImageFilter.GaussianBlur(1.2))
+    base.alpha_composite(scratch_layer)
+
+    # виньетка — затемняем центр, чтобы аватар и текст не терялись на фоне
+    vignette = Image.new("L", (width, height), 0)
+    v_draw = ImageDraw.Draw(vignette)
+    v_draw.ellipse((width * 0.08, height * 0.05, width * 0.92, height * 0.98), fill=90)
+    vignette = vignette.filter(ImageFilter.GaussianBlur(120))
+    dark_layer = Image.new("RGBA", (width, height), (0, 0, 0, 255))
+    dark_layer.putalpha(vignette)
+    base.alpha_composite(dark_layer)
+
+    return base
+
+
 def _fit_text(draw: ImageDraw.ImageDraw, text: str, weight: str, max_width: int, start_size: int, min_size: int = 28, italic: bool = False):
     size = start_size
     while size > min_size:
@@ -88,7 +142,7 @@ async def generate_welcome_card(
     member_number: int,
     server_name: str,
 ) -> io.BytesIO:
-    base = Image.new("RGBA", (CARD_W, CARD_H), (45, 45, 45, 255))
+    base = _generate_glow_background(CARD_W, CARD_H)
     draw = ImageDraw.Draw(base)
 
     badge_text = f"Member #{member_number}"
