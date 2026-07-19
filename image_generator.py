@@ -108,7 +108,7 @@ async def generate_welcome_card(
     to_y = title_y + 60
     draw.text((CARD_W / 2, to_y), "to", font=to_font, fill=COLOR_TEXT_MUTED, anchor="mm")
 
-    server_tag = f"#{server_name.lower().replace(' ', '')}"
+    server_tag = "#" + server_name.lstrip("#").replace(" ", "")
     server_font_path = os.path.join(FONTS_DIR, "Poppins-Bold.ttf")
     server_font = _fit_text(draw, server_tag, server_font_path, CARD_W - 160, 46)
     server_y = to_y + 60
