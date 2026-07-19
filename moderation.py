@@ -56,13 +56,20 @@ def format_duration(delta: Optional[timedelta]) -> str:
     return " ".join(parts) if parts else "меньше минуты"
 
 
-def is_staff():
+EMBED_COLOR = discord.Color.light_grey()
+
+
+def has_any_role(role_ids):
     async def predicate(interaction: discord.Interaction) -> bool:
         if not isinstance(interaction.user, discord.Member):
             return False
-        role_ids = {r.id for r in interaction.user.roles}
-        return bool(role_ids & set(settings.STAFF_ROLE_IDS))
+        user_role_ids = {r.id for r in interaction.user.roles}
+        return bool(user_role_ids & set(role_ids))
     return app_commands.check(predicate)
+
+
+def is_staff():
+    return has_any_role(settings.STAFF_ROLE_IDS)
 
 
 class Moderation(commands.Cog):
@@ -97,7 +104,7 @@ class Moderation(commands.Cog):
         return f"{moderator} ({moderator.id})"
 
     def build_dm_embed(self, *, guild, action, moderator, reason, duration_text):
-        embed = discord.Embed(title=action, color=discord.Color.light_grey(), timestamp=datetime.now(timezone.utc))
+        embed = discord.Embed(title=action, color=EMBED_COLOR, timestamp=datetime.now(timezone.utc))
         embed.add_field(name="Сервер", value=guild.name, inline=False)
         embed.add_field(name="Модератор", value=self._moderator_label(moderator), inline=False)
         embed.add_field(name="Причина", value=reason, inline=False)
@@ -165,7 +172,7 @@ class Moderation(commands.Cog):
         await self._log_action(
             interaction.guild, settings.BAN_LOG_CHANNEL_ID, title="Бан",
             moderator=interaction.user, target=user, reason=reason,
-            duration_text=duration_text, color=discord.Color.red(),
+            duration_text=duration_text, color=EMBED_COLOR,
         )
 
     # ---------- /unban ----------
@@ -197,7 +204,7 @@ class Moderation(commands.Cog):
         await self._log_action(
             interaction.guild, settings.BAN_LOG_CHANNEL_ID, title="Разбан",
             moderator=interaction.user, target=user, reason=reason,
-            duration_text="—", color=discord.Color.green(),
+            duration_text="—", color=EMBED_COLOR,
         )
 
     # ---------- /mute ----------
@@ -236,13 +243,16 @@ class Moderation(commands.Cog):
 
         await user.timeout(delta, reason=f"{reason} | Модератор: {interaction.user}")
 
-        await interaction.followup.send(
-            f"✅ {user.mention} замьючен. Срок: **{duration_text}**. Причина: {reason}"
-        )
+        public_embed = discord.Embed(title="🔇 Участник замьючен", color=EMBED_COLOR, timestamp=datetime.now(timezone.utc))
+        public_embed.add_field(name="Участник", value=user.mention, inline=False)
+        public_embed.add_field(name="Модератор", value=interaction.user.mention, inline=False)
+        public_embed.add_field(name="Причина", value=reason, inline=False)
+        public_embed.add_field(name="Срок", value=duration_text, inline=False)
+        await interaction.followup.send(embed=public_embed)
         await self._log_action(
             interaction.guild, settings.MUTE_LOG_CHANNEL_ID, title="Мьют",
             moderator=interaction.user, target=user, reason=reason,
-            duration_text=duration_text, color=discord.Color.orange(),
+            duration_text=duration_text, color=EMBED_COLOR,
         )
 
     # ---------- /unmute ----------
@@ -263,7 +273,7 @@ class Moderation(commands.Cog):
         await self._log_action(
             interaction.guild, settings.MUTE_LOG_CHANNEL_ID, title="Снятие мьюта",
             moderator=interaction.user, target=user, reason=reason,
-            duration_text="—", color=discord.Color.green(),
+            duration_text="—", color=EMBED_COLOR,
         )
 
     # ---------- /server ----------
@@ -271,7 +281,7 @@ class Moderation(commands.Cog):
     @is_staff()
     async def server(self, interaction: discord.Interaction):
         guild = interaction.guild
-        embed = discord.Embed(title=f"Статистика {guild.name}", color=discord.Color.blurple())
+        embed = discord.Embed(title=f"Статистика {guild.name}", color=EMBED_COLOR)
         embed.add_field(name="Участники", value=str(guild.member_count))
         embed.add_field(name="Каналы", value=str(len(guild.channels)))
         embed.add_field(name="Роли", value=str(len(guild.roles)))
@@ -279,6 +289,21 @@ class Moderation(commands.Cog):
         embed.add_field(name="Дата создания", value=discord.utils.format_dt(guild.created_at, style="D"), inline=False)
         if guild.icon:
             embed.set_thumbnail(url=guild.icon.url)
+        await interaction.response.send_message(embed=embed)
+
+    # ---------- /profile ----------
+    @app_commands.command(name="profile", description="Показать профиль участника")
+    @app_commands.describe(user="Чей профиль показать (по умолчанию — твой)")
+    @has_any_role(settings.PROFILE_ROLE_IDS)
+    async def profile(self, interaction: discord.Interaction, user: discord.Member = None):
+        target = user or interaction.user
+        embed = discord.Embed(title=f"Профиль {target.display_name}", color=EMBED_COLOR, timestamp=datetime.now(timezone.utc))
+        embed.set_thumbnail(url=target.display_avatar.url)
+        embed.add_field(name="Участник", value=f"{target} ({target.id})", inline=False)
+        embed.add_field(name="Аккаунт создан", value=discord.utils.format_dt(target.created_at, style="D"), inline=True)
+        embed.add_field(name="На сервере с", value=discord.utils.format_dt(target.joined_at, style="D") if target.joined_at else "—", inline=True)
+        roles = [r.mention for r in target.roles if r.name != "@everyone"]
+        embed.add_field(name="Роли", value=", ".join(roles) if roles else "—", inline=False)
         await interaction.response.send_message(embed=embed)
 
     # ---------- /очистить ----------
@@ -383,7 +408,7 @@ class Moderation(commands.Cog):
         await self._log_action(
             message.guild, settings.MUTE_LOG_CHANNEL_ID, title="Автомьют (ссылка-приглашение)",
             moderator=None, target=message.author, reason=reason,
-            duration_text=format_duration(duration), color=discord.Color.orange(),
+            duration_text=format_duration(duration), color=EMBED_COLOR,
         )
 
 
