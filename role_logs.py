@@ -5,13 +5,17 @@
    кто именно это сделал, через audit log сервера.
 2. Создание новой роли на сервере (on_guild_role_create).
 3. Удаление роли с сервера (on_guild_role_delete).
+4. Изменение самой роли — цвет, название, права, hoist/mentionable
+   (on_guild_role_update) — тоже с попыткой определить, кто это сделал.
 
-Все события пишутся в settings.ROLE_LOG_CHANNEL_ID.
+Все события пишутся в settings.ROLE_LOG_CHANNEL_ID, с максимально подробной
+информацией: кто, кому, когда, какая именно роль (цвет, позиция, права),
+причина (если указана при выдаче/снятии через Discord API) и т.д.
 
-ВАЖНО: чтобы бот мог определить, КТО выдал/снял/создал/удалил роль, ему нужно
-право "View Audit Log" (Просмотр журнала аудита). Без этого права лог всё равно
-отправится (сам факт изменения ролей виден по on_member_update / on_guild_role_*),
-но поле "Кто изменил" будет содержать "не удалось определить".
+ВАЖНО: чтобы бот мог определить, КТО выдал/снял/создал/удалил/изменил роль,
+ему нужно право "View Audit Log" (Просмотр журнала аудита). Без этого права
+лог всё равно отправится (сам факт изменения виден по on_member_update /
+on_guild_role_*), но поле "Кто изменил" будет содержать "не удалось определить".
 """
 
 import logging
@@ -29,6 +33,44 @@ EMBED_COLOR = discord.Color(0x808080)
 # Сколько секунд назад должна была произойти запись в audit log, чтобы мы
 # посчитали её "той самой" причиной события, которое сейчас логируем.
 AUDIT_LOG_MATCH_WINDOW = 15
+
+# Права, которые имеет смысл подсвечивать в логе как "ключевые" — полный список
+# прав слишком длинный и бесполезен для быстрого чтения лога.
+NOTABLE_PERMISSIONS = (
+    ("administrator", "Администратор"),
+    ("manage_guild", "Управление сервером"),
+    ("manage_roles", "Управление ролями"),
+    ("manage_channels", "Управление каналами"),
+    ("manage_messages", "Управление сообщениями"),
+    ("manage_webhooks", "Управление вебхуками"),
+    ("manage_nicknames", "Управление никнеймами"),
+    ("manage_events", "Управление событиями"),
+    ("kick_members", "Кик участников"),
+    ("ban_members", "Бан участников"),
+    ("moderate_members", "Модерация участников (тайм-аут)"),
+    ("mention_everyone", "Упоминание @everyone"),
+    ("mute_members", "Мьют в голосовых каналах"),
+    ("deafen_members", "Заглушение в голосовых каналах"),
+    ("move_members", "Перемещение участников"),
+)
+
+
+def _notable_perms_text(permissions: discord.Permissions) -> str:
+    active = [label for attr, label in NOTABLE_PERMISSIONS if getattr(permissions, attr, False)]
+    if not active:
+        return "нет ключевых прав"
+    return ", ".join(active)
+
+
+def _role_details_text(role: discord.Role) -> str:
+    color_hex = f"#{role.color.value:06x}" if role.color.value else "нет (по умолчанию)"
+    return (
+        f"Цвет: **{color_hex}**\n"
+        f"Позиция: **{role.position}**\n"
+        f"Показывается отдельно от онлайн-участников: **{'да' if role.hoist else 'нет'}**\n"
+        f"Можно упомянуть всем: **{'да' if role.mentionable else 'нет'}**\n"
+        f"Ключевые права: {_notable_perms_text(role.permissions)}"
+    )
 
 
 class RoleLogs(commands.Cog):
@@ -69,7 +111,16 @@ class RoleLogs(commands.Cog):
     def _actor_field_value(actor: discord.abc.User | None) -> str:
         if actor is None:
             return "не удалось определить (нет права View Audit Log или изменено напрямую через API)"
-        return f"{actor.mention} (`{actor.id}`)"
+        return f"{actor.mention} (`{actor.id}`) — {actor}"
+
+    async def _send(self, guild: discord.Guild, embed: discord.Embed):
+        channel = await self._log_channel(guild)
+        if channel is None:
+            return
+        try:
+            await channel.send(embed=embed)
+        except discord.HTTPException:
+            log.exception("Не удалось отправить лог ролей в канал %s", channel.id)
 
     # ---------- выдача/снятие ролей участнику ----------
     @commands.Cog.listener()
@@ -85,8 +136,7 @@ class RoleLogs(commands.Cog):
             return
 
         guild = after.guild
-        channel = await self._log_channel(guild)
-        if channel is None:
+        if await self._log_channel(guild) is None:
             return
 
         actor, reason = await self._find_actor(guild, discord.AuditLogAction.member_role_update, after.id)
@@ -97,75 +147,137 @@ class RoleLogs(commands.Cog):
             timestamp=datetime.now(timezone.utc),
         )
         embed.set_author(name=str(after), icon_url=after.display_avatar.url)
+        embed.set_thumbnail(url=after.display_avatar.url)
         embed.add_field(name="Участник", value=f"{after.mention} (`{after.id}`)", inline=False)
+        embed.add_field(
+            name="Аккаунт создан",
+            value=f"<t:{int(after.created_at.timestamp())}:F> (<t:{int(after.created_at.timestamp())}:R>)",
+            inline=True,
+        )
+        if after.joined_at:
+            embed.add_field(
+                name="На сервере с",
+                value=f"<t:{int(after.joined_at.timestamp())}:F> (<t:{int(after.joined_at.timestamp())}:R>)",
+                inline=True,
+            )
         if added:
             embed.add_field(
-                name="Роли выданы ✅",
-                value="\n".join(f"{r.mention} (`{r.id}`)" for r in added),
+                name=f"Роли выданы ✅ ({len(added)})",
+                value="\n".join(f"{r.mention} (`{r.id}`) — позиция {r.position}" for r in added),
                 inline=False,
             )
         if removed:
             embed.add_field(
-                name="Роли сняты ❌",
-                value="\n".join(f"{r.mention} (`{r.id}`)" for r in removed),
+                name=f"Роли сняты ❌ ({len(removed)})",
+                value="\n".join(f"{r.mention} (`{r.id}`) — позиция {r.position}" for r in removed),
                 inline=False,
             )
         embed.add_field(name="Кто изменил", value=self._actor_field_value(actor), inline=False)
         if reason:
             embed.add_field(name="Причина", value=reason[:1024], inline=False)
+        embed.add_field(
+            name="Всего ролей у участника сейчас",
+            value=str(len(after_roles) - 1 if guild.default_role in after_roles else len(after_roles)),
+            inline=True,
+        )
+        embed.set_footer(text=f"ID участника: {after.id}")
 
-        try:
-            await channel.send(embed=embed)
-        except discord.HTTPException:
-            log.exception("Не удалось отправить лог изменения ролей в канал %s", channel.id)
+        await self._send(guild, embed)
 
     # ---------- создание новой роли на сервере ----------
     @commands.Cog.listener()
     async def on_guild_role_create(self, role: discord.Role):
-        channel = await self._log_channel(role.guild)
-        if channel is None:
+        if await self._log_channel(role.guild) is None:
             return
 
         actor, reason = await self._find_actor(role.guild, discord.AuditLogAction.role_create, role.id)
 
         embed = discord.Embed(
             title="Создана новая роль",
-            color=EMBED_COLOR,
+            color=role.color if role.color.value else EMBED_COLOR,
             timestamp=datetime.now(timezone.utc),
         )
-        embed.add_field(name="Роль", value=f"{role.mention} (`{role.id}`)", inline=False)
+        embed.add_field(name="Роль", value=f"{role.mention} (`{role.id}`)\n**{role.name}**", inline=False)
+        embed.add_field(name="Подробности роли", value=_role_details_text(role), inline=False)
         embed.add_field(name="Кто создал", value=self._actor_field_value(actor), inline=False)
         if reason:
             embed.add_field(name="Причина", value=reason[:1024], inline=False)
+        if role.icon:
+            embed.set_thumbnail(url=role.icon.url)
+        embed.set_footer(text=f"ID роли: {role.id} | Всего ролей на сервере: {len(role.guild.roles)}")
 
-        try:
-            await channel.send(embed=embed)
-        except discord.HTTPException:
-            log.exception("Не удалось отправить лог создания роли в канал %s", channel.id)
+        await self._send(role.guild, embed)
 
     # ---------- удаление роли с сервера ----------
     @commands.Cog.listener()
     async def on_guild_role_delete(self, role: discord.Role):
-        channel = await self._log_channel(role.guild)
-        if channel is None:
+        if await self._log_channel(role.guild) is None:
             return
 
         actor, reason = await self._find_actor(role.guild, discord.AuditLogAction.role_delete, role.id)
 
         embed = discord.Embed(
             title="Роль удалена",
-            color=EMBED_COLOR,
+            color=role.color if role.color.value else EMBED_COLOR,
             timestamp=datetime.now(timezone.utc),
         )
         embed.add_field(name="Роль", value=f"**{role.name}** (`{role.id}`)", inline=False)
+        embed.add_field(name="Подробности удалённой роли", value=_role_details_text(role), inline=False)
+        embed.add_field(
+            name="Участников с этой ролью на момент удаления",
+            value=str(len(role.members)),
+            inline=True,
+        )
         embed.add_field(name="Кто удалил", value=self._actor_field_value(actor), inline=False)
         if reason:
             embed.add_field(name="Причина", value=reason[:1024], inline=False)
+        embed.set_footer(text=f"ID роли: {role.id}")
 
-        try:
-            await channel.send(embed=embed)
-        except discord.HTTPException:
-            log.exception("Не удалось отправить лог удаления роли в канал %s", channel.id)
+        await self._send(role.guild, embed)
+
+    # ---------- изменение самой роли (цвет, название, права, hoist и т.д.) ----------
+    @commands.Cog.listener()
+    async def on_guild_role_update(self, before: discord.Role, after: discord.Role):
+        changes: list[tuple[str, str, str]] = []  # (поле, было, стало)
+
+        if before.name != after.name:
+            changes.append(("Название", before.name, after.name))
+        if before.color != after.color:
+            before_hex = f"#{before.color.value:06x}" if before.color.value else "нет"
+            after_hex = f"#{after.color.value:06x}" if after.color.value else "нет"
+            changes.append(("Цвет", before_hex, after_hex))
+        if before.hoist != after.hoist:
+            changes.append(("Показ отдельно от участников", "да" if before.hoist else "нет", "да" if after.hoist else "нет"))
+        if before.mentionable != after.mentionable:
+            changes.append(("Можно упомянуть всем", "да" if before.mentionable else "нет", "да" if after.mentionable else "нет"))
+        if before.permissions != after.permissions:
+            changes.append(("Ключевые права", _notable_perms_text(before.permissions), _notable_perms_text(after.permissions)))
+        if before.position != after.position:
+            changes.append(("Позиция", str(before.position), str(after.position)))
+
+        if not changes:
+            return
+
+        guild = after.guild
+        if await self._log_channel(guild) is None:
+            return
+
+        actor, reason = await self._find_actor(guild, discord.AuditLogAction.role_update, after.id)
+
+        embed = discord.Embed(
+            title="Роль изменена",
+            color=after.color if after.color.value else EMBED_COLOR,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="Роль", value=f"{after.mention} (`{after.id}`)", inline=False)
+        for field_name, old_value, new_value in changes:
+            embed.add_field(name=field_name, value=f"было: **{old_value}**\nстало: **{new_value}**", inline=True)
+        embed.add_field(name="Кто изменил", value=self._actor_field_value(actor), inline=False)
+        if reason:
+            embed.add_field(name="Причина", value=reason[:1024], inline=False)
+        embed.set_footer(text=f"ID роли: {after.id}")
+
+        await self._send(guild, embed)
 
 
 async def setup(bot: commands.Bot):
