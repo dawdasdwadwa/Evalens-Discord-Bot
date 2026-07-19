@@ -1,5 +1,5 @@
 """
-Точка входа бота Wildsync.
+Точка входа бота Evalens.
 """
 
 import asyncio
@@ -14,7 +14,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
-log = logging.getLogger("wildsync.bot")
+log = logging.getLogger("evalens.bot")
 
 INTENTS = discord.Intents.default()
 INTENTS.members = True  # обязательно для on_member_join
@@ -31,7 +31,7 @@ INITIAL_COGS = (
 )
 
 
-class WildsyncBot(commands.Bot):
+class EvalensBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=INTENTS)
 
@@ -54,7 +54,7 @@ async def main():
     if not settings.DISCORD_TOKEN:
         raise RuntimeError("DISCORD_TOKEN не задан. Проверьте переменные окружения")
 
-    bot = WildsyncBot()
+    bot = EvalensBot()
     async with bot:
         await bot.start(settings.DISCORD_TOKEN)
 

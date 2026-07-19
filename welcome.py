@@ -10,7 +10,7 @@ from discord.ext import commands
 import settings
 from image_generator import generate_welcome_card
 
-log = logging.getLogger("wildsync.welcome")
+log = logging.getLogger("evalens.welcome")
 
 
 class Welcome(commands.Cog):

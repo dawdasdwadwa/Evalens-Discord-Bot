@@ -25,7 +25,7 @@ from discord.ext import commands
 
 import settings
 
-log = logging.getLogger("wildsync.invite_logs")
+log = logging.getLogger("evalens.invite_logs")
 
 
 class InviteLogs(commands.Cog):

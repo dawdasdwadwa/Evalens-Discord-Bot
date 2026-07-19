@@ -11,7 +11,7 @@ from discord.ext import commands, tasks
 
 import settings
 
-log = logging.getLogger("wildsync.moderation")
+log = logging.getLogger("evalens.moderation")
 
 TEMP_BANS_FILE = "temp_bans.json"
 

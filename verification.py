@@ -17,9 +17,9 @@ from discord.ext import commands
 
 import settings
 
-log = logging.getLogger("wildsync.verification")
+log = logging.getLogger("evalens.verification")
 
-VERIFY_BUTTON_CUSTOM_ID = "wildsync:verify_button"
+VERIFY_BUTTON_CUSTOM_ID = "evalens:verify_button"
 
 
 class VerificationView(discord.ui.View):
