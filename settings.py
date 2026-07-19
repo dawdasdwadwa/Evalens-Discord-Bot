@@ -29,6 +29,9 @@ UNVERIFIED_ROLE_ID = _int_env("UNVERIFIED_ROLE_ID", 0)
 # Роль, которая выдаётся автоматически всем новым участникам при входе
 JOIN_ROLE_ID = _int_env("JOIN_ROLE_ID", 1528014100066603159)
 
+# Канал, куда пишутся логи о прохождении верификации
+VERIFICATION_LOG_CHANNEL_ID = _int_env("VERIFICATION_LOG_CHANNEL_ID", 1528009513213493320)
+
 # --- тексты верификации ---
 VERIFICATION_TITLE = os.getenv("VERIFICATION_TITLE", "Верификация")
 VERIFICATION_DESCRIPTION = os.getenv(

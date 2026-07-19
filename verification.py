@@ -1,11 +1,18 @@
 """
 Ког верификации участников по кнопке.
+
+Панель верификации публикуется АВТОМАТИЧЕСКИ при каждом старте бота
+(в т.ч. при редеплое) — без ручной команды. Старое сообщение бота
+в канале верификации удаляется перед отправкой нового, чтобы панели
+не копились при перезапусках.
+
+Успешные верификации логируются в отдельный канал.
 """
 
 import logging
+from datetime import datetime, timezone
 
 import discord
-from discord import app_commands
 from discord.ext import commands
 
 import settings
@@ -81,37 +88,71 @@ class VerificationView(discord.ui.View):
             "Вы успешно прошли верификацию! Добро пожаловать 🎉", ephemeral=True
         )
 
+        await self._send_log(guild, member)
+
+    async def _send_log(self, guild: discord.Guild, member: discord.Member):
+        if not settings.VERIFICATION_LOG_CHANNEL_ID:
+            return
+
+        log_channel = guild.get_channel(settings.VERIFICATION_LOG_CHANNEL_ID)
+        if log_channel is None:
+            log.warning("Канал логов верификации %s не найден", settings.VERIFICATION_LOG_CHANNEL_ID)
+            return
+
+        embed = discord.Embed(
+            description=f"🤍 {member.mention} прошёл верификацию",
+            color=discord.Color(0x808080),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.set_author(name=str(member), icon_url=member.display_avatar.url)
+        embed.add_field(name="Пользователь", value=f"{member.mention} (`{member.id}`)", inline=False)
+
+        try:
+            await log_channel.send(embed=embed)
+        except discord.HTTPException:
+            log.exception("Не удалось отправить лог верификации в канал %s", log_channel.id)
+
 
 class Verification(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.bot.add_view(VerificationView())
+        self._panel_posted = False
 
-    @app_commands.command(
-        name="setup_verification",
-        description="Опубликовать панель верификации в текущем канале (только для администраторов).",
-    )
-    @app_commands.checks.has_permissions(administrator=True)
-    async def setup_verification(self, interaction: discord.Interaction):
-        embed = discord.Embed(
-            title=settings.VERIFICATION_TITLE,
-            description=settings.VERIFICATION_DESCRIPTION,
-            color=discord.Color(0x808080),
-        )
-        embed.set_image(url=settings.VERIFICATION_IMAGE_URL)
-        view = VerificationView()
-        await interaction.channel.send(embed=embed, view=view)
-        await interaction.response.send_message("Панель верификации опубликована ✅", ephemeral=True)
+    @commands.Cog.listener()
+    async def on_ready(self):
+        # публикуем панель верификации один раз за жизнь процесса
+        # (то есть при каждом старте/редеплое бота — заново)
+        if self._panel_posted:
+            return
+        self._panel_posted = True
 
-    @setup_verification.error
-    async def setup_verification_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-        if isinstance(error, app_commands.MissingPermissions):
-            await interaction.response.send_message(
-                "Эта команда доступна только администраторам.", ephemeral=True
+        for guild in self.bot.guilds:
+            channel = guild.get_channel(settings.VERIFICATION_CHANNEL_ID)
+            if channel is None:
+                continue
+
+            # чистим старые сообщения бота в этом канале, чтобы не копились панели
+            try:
+                await channel.purge(limit=50, check=lambda m: m.author == self.bot.user)
+            except discord.Forbidden:
+                log.warning("Нет прав на очистку канала верификации %s", channel.id)
+            except discord.HTTPException:
+                log.exception("Не удалось очистить канал верификации %s", channel.id)
+
+            embed = discord.Embed(
+                title=settings.VERIFICATION_TITLE,
+                description=settings.VERIFICATION_DESCRIPTION,
+                color=discord.Color(0x808080),
             )
-        else:
-            log.exception("Ошибка команды setup_verification", exc_info=error)
-            await interaction.response.send_message("Произошла ошибка при выполнении команды.", ephemeral=True)
+            embed.set_image(url=settings.VERIFICATION_IMAGE_URL)
+            view = VerificationView()
+
+            try:
+                await channel.send(embed=embed, view=view)
+                log.info("Панель верификации опубликована в канале %s", channel.id)
+            except discord.HTTPException:
+                log.exception("Не удалось опубликовать панель верификации в канале %s", channel.id)
 
 
 async def setup(bot: commands.Bot):
