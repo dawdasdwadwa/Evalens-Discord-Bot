@@ -96,8 +96,8 @@ class Moderation(commands.Cog):
             return "Бот (автомодерация)"
         return f"{moderator} ({moderator.id})"
 
-    def build_dm_embed(self, *, guild, action, moderator, reason, duration_text, color):
-        embed = discord.Embed(title=action, color=color, timestamp=datetime.now(timezone.utc))
+    def build_dm_embed(self, *, guild, action, moderator, reason, duration_text):
+        embed = discord.Embed(title=action, color=discord.Color.light_grey(), timestamp=datetime.now(timezone.utc))
         embed.add_field(name="Сервер", value=guild.name, inline=False)
         embed.add_field(name="Модератор", value=self._moderator_label(moderator), inline=False)
         embed.add_field(name="Причина", value=reason, inline=False)
@@ -145,7 +145,7 @@ class Moderation(commands.Cog):
 
         embed = self.build_dm_embed(
             guild=interaction.guild, action="Вы были забанены", moderator=interaction.user,
-            reason=reason, duration_text=duration_text, color=discord.Color.red(),
+            reason=reason, duration_text=duration_text,
         )
         await self._dm_user(user, embed)
 
@@ -225,19 +225,19 @@ class Moderation(commands.Cog):
             delta = timedelta(days=28)
             note = " (сокращено до 28 дней — лимит Discord API)"
 
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=False)
         duration_text = format_duration(delta) + note
 
         embed = self.build_dm_embed(
             guild=interaction.guild, action="Вы были замьючены", moderator=interaction.user,
-            reason=reason, duration_text=duration_text, color=discord.Color.orange(),
+            reason=reason, duration_text=duration_text,
         )
         await self._dm_user(user, embed)
 
         await user.timeout(delta, reason=f"{reason} | Модератор: {interaction.user}")
 
         await interaction.followup.send(
-            f"✅ {user.mention} замьючен. Срок: **{duration_text}**. Причина: {reason}", ephemeral=True
+            f"✅ {user.mention} замьючен. Срок: **{duration_text}**. Причина: {reason}"
         )
         await self._log_action(
             interaction.guild, settings.MUTE_LOG_CHANNEL_ID, title="Мьют",
@@ -255,7 +255,7 @@ class Moderation(commands.Cog):
 
         embed = self.build_dm_embed(
             guild=interaction.guild, action="С вас сняли мьют", moderator=interaction.user,
-            reason=reason, duration_text="—", color=discord.Color.green(),
+            reason=reason, duration_text="—",
         )
         await self._dm_user(user, embed)
 
@@ -370,7 +370,7 @@ class Moderation(commands.Cog):
 
         embed = self.build_dm_embed(
             guild=message.guild, action="Вы были замьючены", moderator=None,
-            reason=reason, duration_text=format_duration(duration), color=discord.Color.orange(),
+            reason=reason, duration_text=format_duration(duration),
         )
         await self._dm_user(message.author, embed)
 
