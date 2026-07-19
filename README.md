@@ -133,10 +133,6 @@ Railway → Variables — **не в самом репозитории**):
 по умолчанию в `settings.py` и переопределять их не обязательно —
 но при желании их тоже можно вынести в `.env` (см. `.env.example`).
 
-Исключение — `ROLE_LOG_CHANNEL_ID` (канал для логов ролей, `role_logs.py`):
-по умолчанию он равен `0` (логирование отключено), значение нужно задать
-самостоятельно через переменную окружения `ROLE_LOG_CHANNEL_ID`.
-
 ## Права и intents (Discord Developer Portal → Bot)
 
 Privileged Gateway Intents — включить оба:
