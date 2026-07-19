@@ -96,7 +96,7 @@ class Verification(commands.Cog):
         embed = discord.Embed(
             title=settings.VERIFICATION_TITLE,
             description=settings.VERIFICATION_DESCRIPTION,
-            color=discord.Color(0x000000),
+            color=discord.Color(0x808080),
         )
         embed.set_image(url=settings.VERIFICATION_IMAGE_URL)
         view = VerificationView()
