@@ -58,6 +58,15 @@ def format_duration(delta: Optional[timedelta]) -> str:
 
 EMBED_COLOR = discord.Color.light_grey()
 
+# Если в settings.py ещё не добавлена переменная PROFILE_ROLE_IDS —
+# используем роли стаффа, чтобы ког не падал при загрузке.
+PROFILE_ROLE_IDS = getattr(settings, "PROFILE_ROLE_IDS", settings.STAFF_ROLE_IDS)
+if not hasattr(settings, "PROFILE_ROLE_IDS"):
+    log.warning(
+        "В settings.py нет PROFILE_ROLE_IDS — /profile временно доступна только стаффу. "
+        "Добавь PROFILE_ROLE_IDS, чтобы открыть команду нужной роли."
+    )
+
 
 def has_any_role(role_ids):
     async def predicate(interaction: discord.Interaction) -> bool:
@@ -294,7 +303,7 @@ class Moderation(commands.Cog):
     # ---------- /profile ----------
     @app_commands.command(name="profile", description="Показать профиль участника")
     @app_commands.describe(user="Чей профиль показать (по умолчанию — твой)")
-    @has_any_role(settings.PROFILE_ROLE_IDS)
+    @has_any_role(PROFILE_ROLE_IDS)
     async def profile(self, interaction: discord.Interaction, user: discord.Member = None):
         target = user or interaction.user
         embed = discord.Embed(title=f"Профиль {target.display_name}", color=EMBED_COLOR, timestamp=datetime.now(timezone.utc))
