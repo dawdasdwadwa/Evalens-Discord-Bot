@@ -1,5 +1,5 @@
 """
-moderation.py — слэш-команды модерации: /ban, /kick, /mute, /unban, /unmute, /server.
+moderation.py — слэш-команды модерации: /ban, /mute, /unban, /unmute, /server.
 
 Доступ:
     Команды может использовать только участник, у которого есть хотя бы
@@ -20,11 +20,23 @@ moderation.py — слэш-команды модерации: /ban, /kick, /mute
     Реализован через встроенный Discord timeout (member.timeout(...)).
     Максимум, который разрешает сам Discord — 28 дней. Поэтому в /mute
     нет варианта "навсегда": это ограничение платформы, не бота.
+
+Логи:
+    Баны/разбаны -> BAN_LOG_CHANNEL_ID.
+    Мьюты/размьюты (в т.ч. автоматические) -> MUTE_LOG_CHANNEL_ID.
+
+Автомодерация:
+    Любое сообщение со ссылкой-приглашением на чужой Discord-сервер
+    (discord.gg/..., discord.com/invite/..., discordapp.com/invite/...)
+    от участника без роли из ALLOWED_ROLE_IDS автоматически удаляется,
+    автору выдаётся мьют на 10 минут, в ЛС уходит уведомление о причине,
+    действие логируется в MUTE_LOG_CHANNEL_ID.
 """
 
 import json
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -39,6 +51,15 @@ ALLOWED_ROLE_IDS = {
     1527719311970668716,
     1527718985485910016,
 }
+
+BAN_LOG_CHANNEL_ID = 1528009214138646649
+MUTE_LOG_CHANNEL_ID = 1528218178759561276
+
+INVITE_LINK_MUTE_REASON = "Присылание ссылок - приглашений на чужой Discord сервер"
+INVITE_LINK_PATTERN = re.compile(
+    r"(discord\.gg/|discord(?:app)?\.com/invite/)[a-zA-Z0-9-]+",
+    re.IGNORECASE,
+)
 
 TEMP_BANS_FILE = "temp_bans.json"
 
@@ -77,12 +98,16 @@ def parse_duration(value: str) -> timedelta | None:
     return timedelta(seconds=amount * _UNIT_SECONDS[unit])
 
 
+def member_is_staff(member: discord.Member) -> bool:
+    return any(role.id in ALLOWED_ROLE_IDS for role in member.roles)
+
+
 def is_staff():
     async def predicate(interaction: discord.Interaction) -> bool:
         member = interaction.user
         if not isinstance(member, discord.Member):
             return False
-        return any(role.id in ALLOWED_ROLE_IDS for role in member.roles)
+        return member_is_staff(member)
     return app_commands.check(predicate)
 
 
@@ -153,6 +178,71 @@ class Moderation(commands.Cog):
     @check_temp_bans.before_loop
     async def before_check_temp_bans(self):
         await self.bot.wait_until_ready()
+
+    # ---------- логи в отдельные каналы ----------
+
+    async def send_log(self, channel_id: int, embed: discord.Embed) -> None:
+        channel = self.bot.get_channel(channel_id)
+        if channel is None:
+            logger.warning("Лог-канал %s не найден", channel_id)
+            return
+        try:
+            await channel.send(embed=embed)
+        except discord.HTTPException as e:
+            logger.warning("Не удалось отправить лог в %s: %s", channel_id, e)
+
+    # ---------- автомодерация: ссылки-приглашения ----------
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot or message.guild is None:
+            return
+        if not isinstance(message.author, discord.Member):
+            return
+        if member_is_staff(message.author) or message.author.guild_permissions.administrator:
+            return
+        if not INVITE_LINK_PATTERN.search(message.content):
+            return
+
+        member = message.author
+        guild = message.guild
+
+        try:
+            await message.delete()
+        except discord.HTTPException:
+            pass
+
+        if guild.me.top_role <= member.top_role:
+            logger.warning(
+                "Не могу замьютить %s за инвайт-ссылку — роль бота не выше роли участника",
+                member.id,
+            )
+            return
+
+        until = discord.utils.utcnow() + timedelta(minutes=10)
+        try:
+            await member.timeout(until, reason=INVITE_LINK_MUTE_REASON)
+        except discord.HTTPException as e:
+            logger.warning("Не удалось замьютить %s за инвайт-ссылку: %s", member.id, e)
+            return
+
+        try:
+            await member.send(f"Вы были замьючены по причине: {INVITE_LINK_MUTE_REASON}")
+        except discord.HTTPException:
+            pass
+
+        embed = discord.Embed(
+            title="Автомьют — ссылка-приглашение",
+            color=0x808080,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="Участник", value=f"{member.mention} (`{member.id}`)", inline=False)
+        embed.add_field(name="Канал", value=message.channel.mention, inline=False)
+        embed.add_field(name="Срок", value="10 минут", inline=False)
+        embed.add_field(name="Причина", value=INVITE_LINK_MUTE_REASON, inline=False)
+        embed.add_field(name="Модератор", value="Автомодерация", inline=False)
+
+        await self.send_log(MUTE_LOG_CHANNEL_ID, embed)
 
     # ---------- общий обработчик ошибок для когa ----------
 
@@ -230,47 +320,7 @@ class Moderation(commands.Cog):
         embed.add_field(name="Модератор", value=interaction.user.mention, inline=False)
 
         await interaction.response.send_message(embed=embed)
-
-    # ---------- /kick ----------
-
-    @app_commands.command(name="kick", description="Кикнуть участника с сервера")
-    @app_commands.describe(member="Кого кикнуть", reason="Причина кика")
-    @is_staff()
-    async def kick(
-        self,
-        interaction: discord.Interaction,
-        member: discord.Member,
-        reason: str = "Причина не указана",
-    ):
-        guild = interaction.guild
-        assert guild is not None
-
-        if member.top_role >= guild.me.top_role:
-            await interaction.response.send_message(
-                "Не могу кикнуть этого участника — его роль выше или равна роли бота.",
-                ephemeral=True,
-            )
-            return
-
-        try:
-            await member.send(
-                f"Ты был(а) кикнут(а) с сервера **{guild.name}**.\nПричина: {reason}"
-            )
-        except discord.HTTPException:
-            pass
-
-        await guild.kick(member, reason=reason)
-
-        embed = discord.Embed(
-            title="Участник кикнут",
-            color=0x808080,
-            timestamp=datetime.now(timezone.utc),
-        )
-        embed.add_field(name="Участник", value=f"{member.mention} (`{member.id}`)", inline=False)
-        embed.add_field(name="Причина", value=reason, inline=False)
-        embed.add_field(name="Модератор", value=interaction.user.mention, inline=False)
-
-        await interaction.response.send_message(embed=embed)
+        await self.send_log(BAN_LOG_CHANNEL_ID, embed)
 
     # ---------- /unban ----------
 
@@ -318,6 +368,7 @@ class Moderation(commands.Cog):
         embed.add_field(name="Модератор", value=interaction.user.mention, inline=False)
 
         await interaction.response.send_message(embed=embed)
+        await self.send_log(BAN_LOG_CHANNEL_ID, embed)
 
     # ---------- /mute ----------
 
@@ -370,6 +421,7 @@ class Moderation(commands.Cog):
         embed.add_field(name="Модератор", value=interaction.user.mention, inline=False)
 
         await interaction.response.send_message(embed=embed)
+        await self.send_log(MUTE_LOG_CHANNEL_ID, embed)
 
     # ---------- /unmute ----------
 
@@ -400,6 +452,7 @@ class Moderation(commands.Cog):
         embed.add_field(name="Модератор", value=interaction.user.mention, inline=False)
 
         await interaction.response.send_message(embed=embed)
+        await self.send_log(MUTE_LOG_CHANNEL_ID, embed)
 
     # ---------- /server ----------
 
