@@ -62,7 +62,7 @@ EMBED_COLOR = discord.Color.light_grey()
 # ---------- пороги антиспама ----------
 SPAM_MENTION_LIMIT = 5      # упоминаний (пользователи+роли) в одном сообщении -> спам пингами
 SPAM_FLOOD_COUNT = 5        # сообщений подряд...
-SPAM_FLOOD_WINDOW = 7       # ...за столько секунд -> спам сообщениями
+SPAM_FLOOD_WINDOW = 3       # ...за столько секунд -> спам сообщениями
 SPAM_DUPLICATE_COUNT = 3    # одинаковых сообщений...
 SPAM_DUPLICATE_WINDOW = 20  # ...за столько секунд -> спам одинаковыми сообщениями
 
@@ -96,6 +96,10 @@ class Moderation(commands.Cog):
         self.check_temp_bans.start()
         # (guild_id, user_id) -> deque[(timestamp, содержимое сообщения в нижнем регистре)]
         self.recent_messages: dict[tuple[int, int], deque] = defaultdict(deque)
+        # (guild_id, user_id), которые сейчас обрабатываются автомодерацией —
+        # защита от повторного срабатывания, если участник шлёт несколько
+        # сообщений почти одновременно (race condition)
+        self._auto_moderating: set[tuple[int, int]] = set()
 
     def cog_unload(self):
         self.check_temp_bans.cancel()
@@ -151,6 +155,15 @@ class Moderation(commands.Cog):
         embed.add_field(name="Срок", value=duration_text, inline=False)
         await channel.send(embed=embed)
 
+    @staticmethod
+    async def _send_public_result(interaction: discord.Interaction, *, title, target, moderator, reason, duration_text):
+        embed = discord.Embed(title=title, color=EMBED_COLOR, timestamp=datetime.now(timezone.utc))
+        embed.add_field(name="Участник", value=target.mention if hasattr(target, "mention") else str(target), inline=False)
+        embed.add_field(name="Модератор", value=moderator.mention, inline=False)
+        embed.add_field(name="Причина", value=reason, inline=False)
+        embed.add_field(name="Срок", value=duration_text, inline=False)
+        await interaction.followup.send(embed=embed)
+
     # ---------- /ban ----------
     @app_commands.command(name="ban", description="Забанить участника на выбранный срок")
     @app_commands.describe(
@@ -166,7 +179,7 @@ class Moderation(commands.Cog):
             await interaction.response.send_message(str(e), ephemeral=True)
             return
 
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=False)
         duration_text = format_duration(delta)
 
         embed = self.build_dm_embed(
@@ -185,8 +198,9 @@ class Moderation(commands.Cog):
             })
             self._save_temp_bans()
 
-        await interaction.followup.send(
-            f"✅ {user.mention} забанен. Срок: **{duration_text}**. Причина: {reason}", ephemeral=True
+        await self._send_public_result(
+            interaction, title="🔨 Участник забанен", target=user, moderator=interaction.user,
+            reason=reason, duration_text=duration_text,
         )
         await self._log_action(
             interaction.guild, settings.BAN_LOG_CHANNEL_ID, title="Бан",
@@ -205,7 +219,7 @@ class Moderation(commands.Cog):
             await interaction.response.send_message("ID должен быть числом.", ephemeral=True)
             return
 
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=False)
         try:
             user = await self.bot.fetch_user(uid)
             await interaction.guild.unban(user, reason=f"{reason} | Модератор: {interaction.user}")
@@ -219,7 +233,10 @@ class Moderation(commands.Cog):
         ]
         self._save_temp_bans()
 
-        await interaction.followup.send(f"✅ {user} разбанен. Причина: {reason}", ephemeral=True)
+        await self._send_public_result(
+            interaction, title="🔓 Участник разбанен", target=user, moderator=interaction.user,
+            reason=reason, duration_text="—",
+        )
         await self._log_action(
             interaction.guild, settings.BAN_LOG_CHANNEL_ID, title="Разбан",
             moderator=interaction.user, target=user, reason=reason,
@@ -279,7 +296,7 @@ class Moderation(commands.Cog):
     @app_commands.describe(user="С кого снять мьют", reason="Причина снятия мьюта")
     @is_staff()
     async def unmute(self, interaction: discord.Interaction, user: discord.Member, reason: str):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=False)
         await user.timeout(None, reason=f"{reason} | Модератор: {interaction.user}")
 
         embed = self.build_dm_embed(
@@ -288,7 +305,10 @@ class Moderation(commands.Cog):
         )
         await self._dm_user(user, embed)
 
-        await interaction.followup.send(f"✅ Мьют снят с {user.mention}. Причина: {reason}", ephemeral=True)
+        await self._send_public_result(
+            interaction, title="🔊 Мьют снят", target=user, moderator=interaction.user,
+            reason=reason, duration_text="—",
+        )
         await self._log_action(
             interaction.guild, settings.MUTE_LOG_CHANNEL_ID, title="Снятие мьюта",
             moderator=interaction.user, target=user, reason=reason,
@@ -330,9 +350,12 @@ class Moderation(commands.Cog):
     @app_commands.describe(количество="Сколько сообщений удалить (1-100)")
     @is_staff()
     async def clear(self, interaction: discord.Interaction, количество: app_commands.Range[int, 1, 100]):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=False)
         deleted = await interaction.channel.purge(limit=количество)
-        await interaction.followup.send(f"🧹 Удалено сообщений: {len(deleted)}", ephemeral=True)
+        embed = discord.Embed(title="🧹 Сообщения удалены", color=EMBED_COLOR, timestamp=datetime.now(timezone.utc))
+        embed.add_field(name="Удалено сообщений", value=str(len(deleted)), inline=False)
+        embed.add_field(name="Модератор", value=interaction.user.mention, inline=False)
+        await interaction.followup.send(embed=embed)
         log.info("%s удалил %s сообщений в #%s", interaction.user, len(deleted), interaction.channel)
 
     # ---------- обработчик ошибок слэш-команд когa ----------
@@ -422,6 +445,20 @@ class Moderation(commands.Cog):
         # пока действует мьют
         self.recent_messages.pop((message.guild.id, message.author.id), None)
 
+    async def _try_auto_mute(self, message: discord.Message, *, reason: str, duration: timedelta) -> bool:
+        """Атомарно проверяет и ставит блокировку, чтобы одно и то же превышение
+        лимита (пришедшее в виде нескольких почти одновременных сообщений)
+        не вызвало мьют/лог/публичный эмбед несколько раз подряд."""
+        key = (message.guild.id, message.author.id)
+        if key in self._auto_moderating:
+            return False
+        self._auto_moderating.add(key)
+        try:
+            await self._auto_mute(message, reason=reason, duration=duration)
+        finally:
+            self._auto_moderating.discard(key)
+        return True
+
     # ---------- автомодерация: инвайты, спам, пинг-спам ----------
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -433,6 +470,9 @@ class Moderation(commands.Cog):
         role_ids = {r.id for r in message.author.roles}
         if role_ids & set(settings.STAFF_ROLE_IDS):
             return  # стафф и администраторы исключены
+
+        if (message.guild.id, message.author.id) in self._auto_moderating:
+            return  # уже мьютим этого участника прямо сейчас — не дублируем
 
         auto_mute_duration = timedelta(minutes=10)
 
@@ -446,7 +486,7 @@ class Moderation(commands.Cog):
                 server_invites = set()
 
             if not all(code in server_invites for code in found_codes):
-                await self._auto_mute(
+                await self._try_auto_mute(
                     message,
                     reason="Присылание ссылок - приглашений на чужой Discord сервер",
                     duration=auto_mute_duration,
@@ -456,7 +496,7 @@ class Moderation(commands.Cog):
         # ---- 2. спам пингами (много упоминаний в одном сообщении) ----
         mention_count = len(message.mentions) + len(message.role_mentions) + (1 if message.mention_everyone else 0)
         if mention_count >= SPAM_MENTION_LIMIT:
-            await self._auto_mute(
+            await self._try_auto_mute(
                 message,
                 reason=f"Спам пингами ({mention_count} упоминаний в одном сообщении)",
                 duration=auto_mute_duration,
@@ -475,7 +515,7 @@ class Moderation(commands.Cog):
 
         flood_recent = [t for t, _ in history if (now - t).total_seconds() <= SPAM_FLOOD_WINDOW]
         if len(flood_recent) >= SPAM_FLOOD_COUNT:
-            await self._auto_mute(
+            await self._try_auto_mute(
                 message,
                 reason=f"Спам сообщениями ({len(flood_recent)} сообщений за {SPAM_FLOOD_WINDOW} сек.)",
                 duration=auto_mute_duration,
@@ -485,7 +525,7 @@ class Moderation(commands.Cog):
         if content_key:
             duplicates = [c for _, c in history if c == content_key]
             if len(duplicates) >= SPAM_DUPLICATE_COUNT:
-                await self._auto_mute(
+                await self._try_auto_mute(
                     message,
                     reason="Спам одинаковыми сообщениями",
                     duration=auto_mute_duration,
