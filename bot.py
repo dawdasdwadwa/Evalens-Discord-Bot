@@ -28,6 +28,7 @@ INITIAL_COGS = (
     "verification",
     "invite_logs",
     "moderation",
+    "tickets",
 )
 
 
