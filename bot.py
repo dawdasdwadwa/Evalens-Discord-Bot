@@ -18,11 +18,16 @@ log = logging.getLogger("wildsync.bot")
 
 INTENTS = discord.Intents.default()
 INTENTS.members = True  # обязательно для on_member_join
+INTENTS.message_content = True  # обязательно для moderation.py (автомьют за инвайт-ссылки)
+# ВАЖНО: этот intent также нужно включить в Discord Developer Portal ->
+# твоё приложение -> Bot -> Privileged Gateway Intents -> MESSAGE CONTENT INTENT.
+# Без этого Discord присылает боту пустой message.content, даже если тут True.
 
 INITIAL_COGS = (
     "welcome",
     "verification",
     "invite_logs",
+    "moderation",
 )
 
 

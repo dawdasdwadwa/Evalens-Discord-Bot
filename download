@@ -1,0 +1,17 @@
+# Секреты — никогда не коммитить
+.env
+
+# Данные временных банов (у каждого окружения свои)
+temp_bans.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# ОС/редакторы
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

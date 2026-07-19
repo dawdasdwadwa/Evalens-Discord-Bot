@@ -1,9 +1,9 @@
 """
-moderation.py — слэш-команды модерации: /ban, /mute, /unban, /unmute, /server.
+Ког модерации: /ban, /mute, /unban, /unmute, /server.
 
 Доступ:
     Команды может использовать только участник, у которого есть хотя бы
-    одна из ролей ALLOWED_ROLE_IDS.
+    одна из ролей settings.STAFF_ROLE_IDS.
 
 Временные баны:
     У Discord API нет встроенного "бана на время" — только вечный бан.
@@ -13,8 +13,7 @@ moderation.py — слэш-команды модерации: /ban, /mute, /unba
     ВАЖНО: если Railway у тебя без подключённого Volume, файловая система
     эфемерна — при редеплое temp_bans.json обнулится и все текущие
     временные баны "зависнут" забаненными навсегда (придётся /unban
-    вручную). Если временные баны нужны железно — подключи Railway Volume
-    и укажи в нём путь для TEMP_BANS_FILE.
+    вручную).
 
 Мут:
     Реализован через встроенный Discord timeout (member.timeout(...)).
@@ -22,15 +21,19 @@ moderation.py — слэш-команды модерации: /ban, /mute, /unba
     нет варианта "навсегда": это ограничение платформы, не бота.
 
 Логи:
-    Баны/разбаны -> BAN_LOG_CHANNEL_ID.
-    Мьюты/размьюты (в т.ч. автоматические) -> MUTE_LOG_CHANNEL_ID.
+    Баны/разбаны -> settings.BAN_LOG_CHANNEL_ID.
+    Мьюты/размьюты (в т.ч. автоматические) -> settings.MUTE_LOG_CHANNEL_ID.
 
 Автомодерация:
     Любое сообщение со ссылкой-приглашением на чужой Discord-сервер
     (discord.gg/..., discord.com/invite/..., discordapp.com/invite/...)
-    от участника без роли из ALLOWED_ROLE_IDS автоматически удаляется,
+    от участника без роли из STAFF_ROLE_IDS автоматически удаляется,
     автору выдаётся мьют на 10 минут, в ЛС уходит уведомление о причине,
     действие логируется в MUTE_LOG_CHANNEL_ID.
+
+    ВАЖНО: этот ког читает message.content, поэтому в bot.py обязателен
+    intents.message_content = True + включённый в Developer Portal
+    MESSAGE CONTENT INTENT — иначе автомьют не будет срабатывать.
 """
 
 import json
@@ -43,25 +46,17 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-logger = logging.getLogger(__name__)
+import settings
 
-ALLOWED_ROLE_IDS = {
-    1527719775114105073,
-    1527719636420919396,
-    1527719311970668716,
-    1527718985485910016,
-}
+log = logging.getLogger("wildsync.moderation")
 
-BAN_LOG_CHANNEL_ID = 1528009214138646649
-MUTE_LOG_CHANNEL_ID = 1528218178759561276
+TEMP_BANS_FILE = "temp_bans.json"
 
 INVITE_LINK_MUTE_REASON = "Присылание ссылок - приглашений на чужой Discord сервер"
 INVITE_LINK_PATTERN = re.compile(
     r"(discord\.gg/|discord(?:app)?\.com/invite/)[a-zA-Z0-9-]+",
     re.IGNORECASE,
 )
-
-TEMP_BANS_FILE = "temp_bans.json"
 
 BAN_DURATION_CHOICES = [
     app_commands.Choice(name="1 час", value="1h"),
@@ -99,7 +94,7 @@ def parse_duration(value: str) -> timedelta | None:
 
 
 def member_is_staff(member: discord.Member) -> bool:
-    return any(role.id in ALLOWED_ROLE_IDS for role in member.roles)
+    return any(role.id in settings.STAFF_ROLE_IDS for role in member.roles)
 
 
 def is_staff():
@@ -128,7 +123,7 @@ class Moderation(commands.Cog):
                 with open(TEMP_BANS_FILE, "r", encoding="utf-8") as f:
                     return json.load(f)
             except (json.JSONDecodeError, OSError) as e:
-                logger.warning("Не удалось прочитать %s: %s", TEMP_BANS_FILE, e)
+                log.warning("Не удалось прочитать %s: %s", TEMP_BANS_FILE, e)
         return {}
 
     def _save_temp_bans(self) -> None:
@@ -136,7 +131,7 @@ class Moderation(commands.Cog):
             with open(TEMP_BANS_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.temp_bans, f, indent=2)
         except OSError as e:
-            logger.warning("Не удалось сохранить %s: %s", TEMP_BANS_FILE, e)
+            log.warning("Не удалось сохранить %s: %s", TEMP_BANS_FILE, e)
 
     def _key(self, guild_id: int, user_id: int) -> str:
         return f"{guild_id}:{user_id}"
@@ -163,11 +158,11 @@ class Moderation(commands.Cog):
                     discord.Object(id=user_id),
                     reason="Истёк срок временного бана",
                 )
-                logger.info("Автоматически разбанен %s на сервере %s", user_id, guild_id)
+                log.info("Автоматически разбанен %s на сервере %s", user_id, guild_id)
             except discord.NotFound:
                 pass  # уже разбанен вручную
             except discord.HTTPException as e:
-                logger.warning("Не удалось авто-разбанить %s: %s", user_id, e)
+                log.warning("Не удалось авто-разбанить %s: %s", user_id, e)
             expired_keys.append(key)
 
         if expired_keys:
@@ -184,12 +179,12 @@ class Moderation(commands.Cog):
     async def send_log(self, channel_id: int, embed: discord.Embed) -> None:
         channel = self.bot.get_channel(channel_id)
         if channel is None:
-            logger.warning("Лог-канал %s не найден", channel_id)
+            log.warning("Лог-канал %s не найден", channel_id)
             return
         try:
             await channel.send(embed=embed)
         except discord.HTTPException as e:
-            logger.warning("Не удалось отправить лог в %s: %s", channel_id, e)
+            log.warning("Не удалось отправить лог в %s: %s", channel_id, e)
 
     # ---------- автомодерация: ссылки-приглашения ----------
 
@@ -213,7 +208,7 @@ class Moderation(commands.Cog):
             pass
 
         if guild.me.top_role <= member.top_role:
-            logger.warning(
+            log.warning(
                 "Не могу замьютить %s за инвайт-ссылку — роль бота не выше роли участника",
                 member.id,
             )
@@ -223,7 +218,7 @@ class Moderation(commands.Cog):
         try:
             await member.timeout(until, reason=INVITE_LINK_MUTE_REASON)
         except discord.HTTPException as e:
-            logger.warning("Не удалось замьютить %s за инвайт-ссылку: %s", member.id, e)
+            log.warning("Не удалось замьютить %s за инвайт-ссылку: %s", member.id, e)
             return
 
         try:
@@ -233,7 +228,7 @@ class Moderation(commands.Cog):
 
         embed = discord.Embed(
             title="Автомьют — ссылка-приглашение",
-            color=0x808080,
+            color=discord.Color(0x808080),
             timestamp=datetime.now(timezone.utc),
         )
         embed.add_field(name="Участник", value=f"{member.mention} (`{member.id}`)", inline=False)
@@ -242,7 +237,7 @@ class Moderation(commands.Cog):
         embed.add_field(name="Причина", value=INVITE_LINK_MUTE_REASON, inline=False)
         embed.add_field(name="Модератор", value="Автомодерация", inline=False)
 
-        await self.send_log(MUTE_LOG_CHANNEL_ID, embed)
+        await self.send_log(settings.MUTE_LOG_CHANNEL_ID, embed)
 
     # ---------- общий обработчик ошибок для когa ----------
 
@@ -253,7 +248,7 @@ class Moderation(commands.Cog):
             )
             return
 
-        logger.exception("Ошибка в команде модерации", exc_info=error)
+        log.exception("Ошибка в команде модерации", exc_info=error)
         message = f"Произошла ошибка: {error}"
         if interaction.response.is_done():
             await interaction.followup.send(message, ephemeral=True)
@@ -311,7 +306,7 @@ class Moderation(commands.Cog):
 
         embed = discord.Embed(
             title="Участник забанен",
-            color=0x808080,
+            color=discord.Color(0x808080),
             timestamp=datetime.now(timezone.utc),
         )
         embed.add_field(name="Участник", value=f"{member.mention} (`{member.id}`)", inline=False)
@@ -320,7 +315,7 @@ class Moderation(commands.Cog):
         embed.add_field(name="Модератор", value=interaction.user.mention, inline=False)
 
         await interaction.response.send_message(embed=embed)
-        await self.send_log(BAN_LOG_CHANNEL_ID, embed)
+        await self.send_log(settings.BAN_LOG_CHANNEL_ID, embed)
 
     # ---------- /unban ----------
 
@@ -360,7 +355,7 @@ class Moderation(commands.Cog):
 
         embed = discord.Embed(
             title="Участник разбанен",
-            color=0x808080,
+            color=discord.Color(0x808080),
             timestamp=datetime.now(timezone.utc),
         )
         embed.add_field(name="ID участника", value=f"`{user_id}`", inline=False)
@@ -368,7 +363,7 @@ class Moderation(commands.Cog):
         embed.add_field(name="Модератор", value=interaction.user.mention, inline=False)
 
         await interaction.response.send_message(embed=embed)
-        await self.send_log(BAN_LOG_CHANNEL_ID, embed)
+        await self.send_log(settings.BAN_LOG_CHANNEL_ID, embed)
 
     # ---------- /mute ----------
 
@@ -412,7 +407,7 @@ class Moderation(commands.Cog):
 
         embed = discord.Embed(
             title="Участник замьючен",
-            color=0x808080,
+            color=discord.Color(0x808080),
             timestamp=datetime.now(timezone.utc),
         )
         embed.add_field(name="Участник", value=f"{member.mention} (`{member.id}`)", inline=False)
@@ -421,7 +416,7 @@ class Moderation(commands.Cog):
         embed.add_field(name="Модератор", value=interaction.user.mention, inline=False)
 
         await interaction.response.send_message(embed=embed)
-        await self.send_log(MUTE_LOG_CHANNEL_ID, embed)
+        await self.send_log(settings.MUTE_LOG_CHANNEL_ID, embed)
 
     # ---------- /unmute ----------
 
@@ -444,7 +439,7 @@ class Moderation(commands.Cog):
 
         embed = discord.Embed(
             title="Мьют снят",
-            color=0x808080,
+            color=discord.Color(0x808080),
             timestamp=datetime.now(timezone.utc),
         )
         embed.add_field(name="Участник", value=f"{member.mention} (`{member.id}`)", inline=False)
@@ -452,7 +447,7 @@ class Moderation(commands.Cog):
         embed.add_field(name="Модератор", value=interaction.user.mention, inline=False)
 
         await interaction.response.send_message(embed=embed)
-        await self.send_log(MUTE_LOG_CHANNEL_ID, embed)
+        await self.send_log(settings.MUTE_LOG_CHANNEL_ID, embed)
 
     # ---------- /server ----------
 
@@ -477,7 +472,7 @@ class Moderation(commands.Cog):
 
         embed = discord.Embed(
             title=guild.name,
-            color=0x808080,
+            color=discord.Color(0x808080),
             timestamp=datetime.now(timezone.utc),
         )
         if guild.icon:

@@ -15,6 +15,13 @@ def _int_env(name: str, default: int = 0) -> int:
     return int(value)
 
 
+def _int_set_env(name: str, default: set[int]) -> set[int]:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return default
+    return {int(v.strip()) for v in value.split(",") if v.strip()}
+
+
 # --- основное ---
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 
@@ -41,4 +48,22 @@ VERIFICATION_DESCRIPTION = os.getenv(
 VERIFICATION_BUTTON_LABEL = os.getenv("VERIFICATION_BUTTON_LABEL", "Верифицироваться")
 VERIFICATION_IMAGE_URL = os.getenv(
     "VERIFICATION_IMAGE_URL", "https://i.postimg.cc/T2mLYLtV/image.png"
+)
+
+# --- логи приглашений ---
+INVITE_LOG_CHANNEL_ID = _int_env("INVITE_LOG_CHANNEL_ID", 1528009997286510703)
+
+# --- модерация ---
+BAN_LOG_CHANNEL_ID = _int_env("BAN_LOG_CHANNEL_ID", 1528009214138646649)
+MUTE_LOG_CHANNEL_ID = _int_env("MUTE_LOG_CHANNEL_ID", 1528218178759561276)
+
+# Роли, которым разрешено использовать /ban /kick /mute /unban /unmute /server
+STAFF_ROLE_IDS = _int_set_env(
+    "STAFF_ROLE_IDS",
+    {
+        1527719775114105073,
+        1527719636420919396,
+        1527719311970668716,
+        1527718985485910016,
+    },
 )
