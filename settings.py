@@ -109,5 +109,15 @@ TICKET_NO_PING_ROLE_IDS = _int_set_env(
     },
 )
 
+# Роли, которым закрывается доступ к каналу тикета после его закрытия
+# (наравне с автором тикета)
+TICKET_CLOSED_HIDDEN_ROLE_IDS = _int_set_env(
+    "TICKET_CLOSED_HIDDEN_ROLE_IDS",
+    {
+        1527719636420919396,
+        1527719775114105073,
+    },
+)
+
 # Максимум тикетов, которые один участник может создать за 24 часа
 TICKET_DAILY_LIMIT = _int_env("TICKET_DAILY_LIMIT", 10)
