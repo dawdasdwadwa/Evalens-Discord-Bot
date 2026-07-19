@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -58,6 +59,13 @@ def format_duration(delta: Optional[timedelta]) -> str:
 
 EMBED_COLOR = discord.Color.light_grey()
 
+# ---------- пороги антиспама ----------
+SPAM_MENTION_LIMIT = 5      # упоминаний (пользователи+роли) в одном сообщении -> спам пингами
+SPAM_FLOOD_COUNT = 5        # сообщений подряд...
+SPAM_FLOOD_WINDOW = 7       # ...за столько секунд -> спам сообщениями
+SPAM_DUPLICATE_COUNT = 3    # одинаковых сообщений...
+SPAM_DUPLICATE_WINDOW = 20  # ...за столько секунд -> спам одинаковыми сообщениями
+
 # Если в settings.py ещё не добавлена переменная PROFILE_ROLE_IDS —
 # используем роли стаффа, чтобы ког не падал при загрузке.
 PROFILE_ROLE_IDS = getattr(settings, "PROFILE_ROLE_IDS", settings.STAFF_ROLE_IDS)
@@ -86,6 +94,8 @@ class Moderation(commands.Cog):
         self.bot = bot
         self.temp_bans: list[dict] = self._load_temp_bans()
         self.check_temp_bans.start()
+        # (guild_id, user_id) -> deque[(timestamp, содержимое сообщения в нижнем регистре)]
+        self.recent_messages: dict[tuple[int, int], deque] = defaultdict(deque)
 
     def cog_unload(self):
         self.check_temp_bans.cancel()
@@ -369,38 +379,13 @@ class Moderation(commands.Cog):
     async def before_check_temp_bans(self):
         await self.bot.wait_until_ready()
 
-    # ---------- автомодерация: инвайты на чужие серверы ----------
-    @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
-        if message.author.bot or not message.guild:
-            return
-        if not isinstance(message.author, discord.Member):
-            return
-
-        role_ids = {r.id for r in message.author.roles}
-        if role_ids & set(settings.STAFF_ROLE_IDS):
-            return  # стафф и администраторы исключены
-
-        invite_re = re.compile(r"(?:discord\.gg/|discord(?:app)?\.com/invite/)(\S+)", re.IGNORECASE)
-        found_codes = invite_re.findall(message.content)
-        if not found_codes:
-            return
-
-        try:
-            server_invites = {inv.code for inv in await message.guild.invites()}
-        except discord.Forbidden:
-            server_invites = set()
-
-        if all(code in server_invites for code in found_codes):
-            return  # ссылка на этот же сервер — не трогаем
-
-        try:
-            await message.delete()
-        except discord.Forbidden:
-            pass
-
-        reason = "Присылание ссылок - приглашений на чужой Discord сервер"
-        duration = timedelta(minutes=10)
+    # ---------- общий автомьют (используется автомодерацией) ----------
+    async def _auto_mute(self, message: discord.Message, reason: str, duration: timedelta, delete_message: bool = True):
+        if delete_message:
+            try:
+                await message.delete()
+            except (discord.Forbidden, discord.NotFound):
+                pass
 
         embed = self.build_dm_embed(
             guild=message.guild, action="Вы были замьючены", moderator=None,
@@ -413,9 +398,12 @@ class Moderation(commands.Cog):
         except discord.Forbidden:
             log.warning("Не удалось замьютить %s: недостаточно прав", message.author.id)
             return
+        except discord.HTTPException:
+            # участник уже замьючен дольше — не продлеваем и не дублируем действия
+            return
 
         await self._log_action(
-            message.guild, settings.MUTE_LOG_CHANNEL_ID, title="Автомьют (ссылка-приглашение)",
+            message.guild, settings.MUTE_LOG_CHANNEL_ID, title="Автомьют",
             moderator=None, target=message.author, reason=reason,
             duration_text=format_duration(duration), color=EMBED_COLOR,
         )
@@ -429,6 +417,80 @@ class Moderation(commands.Cog):
             await message.channel.send(embed=public_embed)
         except discord.Forbidden:
             log.warning("Не удалось отправить публичное сообщение об автомьюте в канал %s", message.channel.id)
+
+        # сбрасываем историю сообщений участника, чтобы не триггерить спам-детект повторно,
+        # пока действует мьют
+        self.recent_messages.pop((message.guild.id, message.author.id), None)
+
+    # ---------- автомодерация: инвайты, спам, пинг-спам ----------
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot or not message.guild:
+            return
+        if not isinstance(message.author, discord.Member):
+            return
+
+        role_ids = {r.id for r in message.author.roles}
+        if role_ids & set(settings.STAFF_ROLE_IDS):
+            return  # стафф и администраторы исключены
+
+        auto_mute_duration = timedelta(minutes=10)
+
+        # ---- 1. ссылки-приглашения на чужие Discord-серверы ----
+        invite_re = re.compile(r"(?:discord\.gg/|discord(?:app)?\.com/invite/)(\S+)", re.IGNORECASE)
+        found_codes = invite_re.findall(message.content)
+        if found_codes:
+            try:
+                server_invites = {inv.code for inv in await message.guild.invites()}
+            except discord.Forbidden:
+                server_invites = set()
+
+            if not all(code in server_invites for code in found_codes):
+                await self._auto_mute(
+                    message,
+                    reason="Присылание ссылок - приглашений на чужой Discord сервер",
+                    duration=auto_mute_duration,
+                )
+                return
+
+        # ---- 2. спам пингами (много упоминаний в одном сообщении) ----
+        mention_count = len(message.mentions) + len(message.role_mentions) + (1 if message.mention_everyone else 0)
+        if mention_count >= SPAM_MENTION_LIMIT:
+            await self._auto_mute(
+                message,
+                reason=f"Спам пингами ({mention_count} упоминаний в одном сообщении)",
+                duration=auto_mute_duration,
+            )
+            return
+
+        # ---- 3. флуд и повторяющиеся сообщения ----
+        key = (message.guild.id, message.author.id)
+        now = datetime.now(timezone.utc)
+        content_key = message.content.strip().lower()
+
+        history = self.recent_messages[key]
+        history.append((now, content_key))
+        while history and (now - history[0][0]).total_seconds() > SPAM_DUPLICATE_WINDOW:
+            history.popleft()
+
+        flood_recent = [t for t, _ in history if (now - t).total_seconds() <= SPAM_FLOOD_WINDOW]
+        if len(flood_recent) >= SPAM_FLOOD_COUNT:
+            await self._auto_mute(
+                message,
+                reason=f"Спам сообщениями ({len(flood_recent)} сообщений за {SPAM_FLOOD_WINDOW} сек.)",
+                duration=auto_mute_duration,
+            )
+            return
+
+        if content_key:
+            duplicates = [c for _, c in history if c == content_key]
+            if len(duplicates) >= SPAM_DUPLICATE_COUNT:
+                await self._auto_mute(
+                    message,
+                    reason="Спам одинаковыми сообщениями",
+                    duration=auto_mute_duration,
+                )
+                return
 
 
 async def setup(bot: commands.Bot):
