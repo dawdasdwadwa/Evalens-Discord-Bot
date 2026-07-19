@@ -32,4 +32,7 @@ VERIFICATION_DESCRIPTION = os.getenv(
     "VERIFICATION_DESCRIPTION",
     "Нажмите на кнопку ниже, чтобы подтвердить, что вы не бот, и получить доступ к серверу.",
 )
-VERIFICATION_BUTTON_LABEL = os.getenv("VERIFICATION_BUTTON_LABEL", "✅ Верифицироваться")
+VERIFICATION_BUTTON_LABEL = os.getenv("VERIFICATION_BUTTON_LABEL", "Верифицироваться")
+VERIFICATION_IMAGE_URL = os.getenv(
+    "VERIFICATION_IMAGE_URL", "https://i.postimg.cc/T2mLYLtV/image.png"
+)

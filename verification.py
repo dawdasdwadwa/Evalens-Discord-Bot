@@ -23,7 +23,9 @@ class VerificationView(discord.ui.View):
 
     @discord.ui.button(
         label=settings.VERIFICATION_BUTTON_LABEL,
-        style=discord.ButtonStyle.success,
+        style=discord.ButtonStyle.secondary,  # Discord API не поддерживает чёрный цвет кнопки,
+                                               # secondary (тёмно-серый) — самый близкий вариант
+        emoji="🤍",
         custom_id=VERIFY_BUTTON_CUSTOM_ID,
     )
     async def verify_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -94,8 +96,9 @@ class Verification(commands.Cog):
         embed = discord.Embed(
             title=settings.VERIFICATION_TITLE,
             description=settings.VERIFICATION_DESCRIPTION,
-            color=discord.Color(0x96C4C4),
+            color=discord.Color(0x000000),
         )
+        embed.set_image(url=settings.VERIFICATION_IMAGE_URL)
         view = VerificationView()
         await interaction.channel.send(embed=embed, view=view)
         await interaction.response.send_message("Панель верификации опубликована ✅", ephemeral=True)
