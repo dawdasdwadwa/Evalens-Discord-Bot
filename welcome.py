@@ -22,6 +22,19 @@ class Welcome(commands.Cog):
         if member.bot:
             return
 
+        # --- выдача роли при входе ---
+        if settings.JOIN_ROLE_ID:
+            role = member.guild.get_role(settings.JOIN_ROLE_ID)
+            if role is None:
+                log.warning("Роль с ID %s не найдена на сервере", settings.JOIN_ROLE_ID)
+            else:
+                try:
+                    await member.add_roles(role, reason="Автоматическая роль при входе")
+                except discord.Forbidden:
+                    log.error("Недостаточно прав, чтобы выдать роль %s участнику %s", role, member)
+                except discord.HTTPException:
+                    log.exception("Не удалось выдать роль %s участнику %s", role, member)
+
         channel = member.guild.get_channel(settings.WELCOME_CHANNEL_ID)
         if channel is None:
             log.warning("Канал приветствия %s не найден", settings.WELCOME_CHANNEL_ID)
