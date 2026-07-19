@@ -29,6 +29,7 @@ INITIAL_COGS = (
     "invite_logs",
     "moderation",
     "tickets",
+    "role_logs",
 )
 
 
