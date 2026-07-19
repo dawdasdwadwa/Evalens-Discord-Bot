@@ -67,3 +67,11 @@ STAFF_ROLE_IDS = _int_set_env(
         1527718985485910016,
     },
 )
+
+# Роли, которым разрешено использовать /profile
+PROFILE_ROLE_IDS = _int_set_env(
+    "PROFILE_ROLE_IDS",
+    {
+        1528013970823184555,
+    },
+)
