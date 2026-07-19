@@ -420,6 +420,16 @@ class Moderation(commands.Cog):
             duration_text=format_duration(duration), color=EMBED_COLOR,
         )
 
+        public_embed = discord.Embed(title="🔇 Участник замьючен", color=EMBED_COLOR, timestamp=datetime.now(timezone.utc))
+        public_embed.add_field(name="Участник", value=message.author.mention, inline=False)
+        public_embed.add_field(name="Модератор", value="Бот (автомодерация)", inline=False)
+        public_embed.add_field(name="Причина", value=reason, inline=False)
+        public_embed.add_field(name="Срок", value=format_duration(duration), inline=False)
+        try:
+            await message.channel.send(embed=public_embed)
+        except discord.Forbidden:
+            log.warning("Не удалось отправить публичное сообщение об автомьюте в канал %s", message.channel.id)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Moderation(bot))
