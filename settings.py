@@ -82,3 +82,15 @@ TICKETS_CHANNEL_ID = _int_env("TICKETS_CHANNEL_ID", 1527997613192908900)
 
 # Категория, в которой создаются каналы тикетов (0 — без категории, в корне сервера)
 TICKET_CATEGORY_ID = _int_env("TICKET_CATEGORY_ID", 0)
+
+# Роли, у которых есть доступ к тикету (входят в STAFF_ROLE_IDS), но которых
+# не нужно пинговать при создании тикета
+TICKET_NO_PING_ROLE_IDS = _int_set_env(
+    "TICKET_NO_PING_ROLE_IDS",
+    {
+        1528334284413337605,
+    },
+)
+
+# Максимум тикетов, которые один участник может создать за 24 часа
+TICKET_DAILY_LIMIT = _int_env("TICKET_DAILY_LIMIT", 5)

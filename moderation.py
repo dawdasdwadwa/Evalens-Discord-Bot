@@ -358,6 +358,47 @@ class Moderation(commands.Cog):
         await interaction.followup.send(embed=embed)
         log.info("%s удалил %s сообщений в #%s", interaction.user, len(deleted), interaction.channel)
 
+    # ---------- /role ----------
+    @app_commands.command(name="role", description="Выдать или снять роль участнику")
+    @app_commands.describe(user="Участник", role="Роль", действие="Выдать или снять роль")
+    @app_commands.choices(действие=[
+        app_commands.Choice(name="Выдать", value="add"),
+        app_commands.Choice(name="Снять", value="remove"),
+    ])
+    @is_staff()
+    async def role(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member,
+        role: discord.Role,
+        действие: app_commands.Choice[str],
+    ):
+        if role >= interaction.guild.me.top_role:
+            await interaction.response.send_message(
+                "Роль бота должна быть выше этой роли, чтобы её выдавать/снимать.", ephemeral=True
+            )
+            return
+
+        try:
+            if действие.value == "add":
+                await user.add_roles(role, reason=f"Выдано командой /role участником {interaction.user}")
+                title, verb = "✅ Роль выдана", "Выдана"
+            else:
+                await user.remove_roles(role, reason=f"Снято командой /role участником {interaction.user}")
+                title, verb = "✅ Роль снята", "Снята"
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "У бота недостаточно прав, чтобы изменить роли этого участника.", ephemeral=True
+            )
+            return
+
+        embed = discord.Embed(title=title, color=EMBED_COLOR, timestamp=datetime.now(timezone.utc))
+        embed.add_field(name="Участник", value=user.mention, inline=False)
+        embed.add_field(name="Роль", value=role.mention, inline=False)
+        embed.add_field(name="Модератор", value=interaction.user.mention, inline=False)
+        await interaction.response.send_message(embed=embed)
+        log.info("%s: %s роль %s участнику %s", interaction.user, verb, role, user)
+
     # ---------- обработчик ошибок слэш-команд когa ----------
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.CheckFailure):
