@@ -80,11 +80,28 @@ PROFILE_ROLE_IDS = _int_set_env(
 # Канал, где публикуется панель с кнопками для создания тикетов
 TICKETS_CHANNEL_ID = _int_env("TICKETS_CHANNEL_ID", 1527997613192908900)
 
-# Категория, в которой создаются каналы тикетов (0 — без категории, в корне сервера)
-TICKET_CATEGORY_ID = _int_env("TICKET_CATEGORY_ID", 0)
+# Канал, куда логируются открытие/закрытие тикетов
+TICKET_LOG_CHANNEL_ID = _int_env("TICKET_LOG_CHANNEL_ID", 1528008965332537414)
+
+# Категории для тикетов «Жалоба на игрока»
+PLAYER_REPORT_OPEN_CATEGORY_ID = _int_env("PLAYER_REPORT_OPEN_CATEGORY_ID", 1528005528960368640)
+PLAYER_REPORT_CLOSED_CATEGORY_ID = _int_env("PLAYER_REPORT_CLOSED_CATEGORY_ID", 1528005662465065030)
+
+# Категории для тикетов «Жалоба на персонал»
+STAFF_REPORT_OPEN_CATEGORY_ID = _int_env("STAFF_REPORT_OPEN_CATEGORY_ID", 1528005808464461954)
+STAFF_REPORT_CLOSED_CATEGORY_ID = _int_env("STAFF_REPORT_CLOSED_CATEGORY_ID", 1528006135813242900)
+
+# Роли, которые пингуются при создании тикета «Жалоба на персонал»
+STAFF_REPORT_PING_ROLE_IDS = _int_set_env(
+    "STAFF_REPORT_PING_ROLE_IDS",
+    {
+        1527718985485910016,
+        1527719311970668716,
+    },
+)
 
 # Роли, у которых есть доступ к тикету (входят в STAFF_ROLE_IDS), но которых
-# не нужно пинговать при создании тикета
+# не нужно пинговать при создании тикета «Жалоба на игрока»
 TICKET_NO_PING_ROLE_IDS = _int_set_env(
     "TICKET_NO_PING_ROLE_IDS",
     {
@@ -93,4 +110,4 @@ TICKET_NO_PING_ROLE_IDS = _int_set_env(
 )
 
 # Максимум тикетов, которые один участник может создать за 24 часа
-TICKET_DAILY_LIMIT = _int_env("TICKET_DAILY_LIMIT", 5)
+TICKET_DAILY_LIMIT = _int_env("TICKET_DAILY_LIMIT", 10)
