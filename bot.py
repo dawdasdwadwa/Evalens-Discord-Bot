@@ -22,6 +22,7 @@ INTENTS.members = True  # обязательно для on_member_join
 INITIAL_COGS = (
     "welcome",
     "verification",
+    "invite_logs",
 )
 
 
