@@ -61,7 +61,7 @@ class Welcome(commands.Cog):
 
         try:
             await channel.send(
-                content=f"{member.mention} добро пожаловать на **{member.guild.name}**! 🎉",
+                content=f"{member.mention}",
                 file=file,
             )
         except discord.HTTPException:
