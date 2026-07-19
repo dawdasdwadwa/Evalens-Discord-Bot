@@ -230,7 +230,7 @@ class AddUserSelectView(ui.View):
                 target,
                 view_channel=True,
                 read_message_history=True,
-                send_messages=False,
+                send_messages=True,
                 reason=f"Добавлен в тикет участником {interaction.user}",
             )
         except discord.Forbidden:
@@ -246,10 +246,10 @@ class AddUserSelectView(ui.View):
             return
 
         await interaction.response.edit_message(
-            content=f"✅ {target.mention} добавлен(а) в тикет (доступ только на чтение).", view=None
+            content=f"✅ {target.mention} добавлен(а) в тикет (доступ на чтение и отправку сообщений).", view=None
         )
         await channel.send(
-            f"👀 {interaction.user.mention} добавил(а) {target.mention} в тикет (доступ только на чтение)."
+            f"👀 {interaction.user.mention} добавил(а) {target.mention} в тикет (доступ на чтение и отправку сообщений)."
         )
         log.info("%s добавил %s в тикет %s", interaction.user, target, channel.id)
 
@@ -372,8 +372,15 @@ class TicketActionsView(ui.View):
         except discord.HTTPException:
             log.exception("Ошибка при закрытии канала тикета %s", channel.id)
 
-        # отключаем кнопки в исходном сообщении
+        # отключаем кнопки в исходном сообщении — но НЕ "Удалить тикет" и "Добавить
+        # пользователя": в закрытом тикете стафф всё ещё должен иметь возможность
+        # удалить канал или дополнить его участниками
         for child in self.children:
+            if getattr(child, "custom_id", None) in (
+                TICKET_DELETE_BUTTON_CUSTOM_ID,
+                TICKET_ADD_USER_BUTTON_CUSTOM_ID,
+            ):
+                continue
             child.disabled = True
         button.label = "Тикет закрыт"
         try:
@@ -423,7 +430,7 @@ class TicketActionsView(ui.View):
 
         await interaction.response.send_message(
             "Выберите пользователя, которого нужно добавить в тикет "
-            "(он сможет читать и видеть переписку, но не сможет писать):",
+            "(он сможет читать переписку и писать в канале):",
             view=AddUserSelectView(self.cog),
             ephemeral=True,
         )
