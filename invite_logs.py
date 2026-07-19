@@ -1,44 +1,55 @@
 """
-Ког логов приглашений.
+invite_logs.py — определяет, по какому инвайту зашёл участник, и логирует это.
 
-При заходе нового участника бот определяет, по какой инвайт-ссылке
-он пришёл (сравнивая счётчики использований до/после), и пишет об этом
-в лог-канал: кто зашёл, чей это инвайт, код и текущее число использований.
+Требует право бота "Manage Server" (Manage Guild), иначе guild.invites()
+вернёт пустой список / вызовет Forbidden.
 
-Требуется право бота "Manage Server" (Manage Guild) — без него Discord
-не даёт получить список инвайтов сервера.
+Логика:
+1. При старте бота (on_ready) кешируем текущее состояние всех инвайтов
+   каждого сервера: {invite.code: invite.uses}.
+2. Дополнительно слушаем on_invite_create / on_invite_delete, чтобы кеш
+   не устаревал между заходами участников (иначе после первого же
+   join счётчики могут разъехаться).
+3. При on_member_join сравниваем свежий список инвайтов с закешированным.
+   Тот инвайт, у которого uses стало больше, чем было — это и есть
+   ссылка, по которой зашёл участник.
+4. Если ни один счётчик не вырос (vanity-ссылка или виджет сервера —
+   Discord API не отдаёт для них статистику использований), честно
+   пишем "не удалось определить".
 """
 
-from __future__ import annotations
-
 import logging
+from datetime import datetime, timezone
 
 import discord
 from discord.ext import commands
 
 import settings
 
-log = logging.getLogger("wildsync.invites")
+logger = logging.getLogger(__name__)
+
+INVITE_LOG_CHANNEL_ID = 1528009997286510703
 
 
 class InviteLogs(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # guild_id -> {invite_code: uses}
+        # guild.id -> {invite_code: uses}
         self.invite_cache: dict[int, dict[str, int]] = {}
 
-    async def _cache_guild_invites(self, guild: discord.Guild):
+    async def cache_guild_invites(self, guild: discord.Guild) -> None:
+        """Перечитывает и кеширует инвайты одного сервера."""
         try:
             invites = await guild.invites()
         except discord.Forbidden:
-            log.warning(
-                "Нет прав на просмотр инвайтов сервера %s (нужно право Manage Server)",
-                guild.id,
+            logger.warning(
+                "Нет права Manage Server на сервере %s (%s) — не могу прочитать инвайты",
+                guild.name, guild.id,
             )
             self.invite_cache[guild.id] = {}
             return
-        except discord.HTTPException:
-            log.exception("Не удалось получить список инвайтов сервера %s", guild.id)
+        except discord.HTTPException as e:
+            logger.warning("Не удалось получить инвайты сервера %s: %s", guild.id, e)
             return
 
         self.invite_cache[guild.id] = {invite.code: invite.uses or 0 for invite in invites}
@@ -46,77 +57,124 @@ class InviteLogs(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         for guild in self.bot.guilds:
-            await self._cache_guild_invites(guild)
+            await self.cache_guild_invites(guild)
+        logger.info("invite_logs: кеш инвайтов заполнен для %d серверов", len(self.bot.guilds))
 
     @commands.Cog.listener()
     async def on_invite_create(self, invite: discord.Invite):
-        if invite.guild is None:
-            return
         self.invite_cache.setdefault(invite.guild.id, {})[invite.code] = invite.uses or 0
 
     @commands.Cog.listener()
     async def on_invite_delete(self, invite: discord.Invite):
-        if invite.guild is None:
-            return
-        self.invite_cache.get(invite.guild.id, {}).pop(invite.code, None)
+        cache = self.invite_cache.get(invite.guild.id)
+        if cache is not None:
+            cache.pop(invite.code, None)
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         guild = member.guild
-        before = self.invite_cache.get(guild.id, {})
+        log_channel = guild.get_channel(INVITE_LOG_CHANNEL_ID)
+        if log_channel is None:
+            logger.warning("Канал логов инвайтов %s не найден", INVITE_LOG_CHANNEL_ID)
+            return
+
+        old_cache = self.invite_cache.get(guild.id, {})
 
         try:
             current_invites = await guild.invites()
         except discord.Forbidden:
-            log.warning("Нет прав на просмотр инвайтов сервера %s", guild.id)
+            await self._send_unknown(log_channel, member, reason=(
+                "у бота нет права **Manage Server** — список инвайтов недоступен"
+            ))
             return
-        except discord.HTTPException:
-            log.exception("Не удалось получить список инвайтов сервера %s", guild.id)
+        except discord.HTTPException as e:
+            await self._send_unknown(log_channel, member, reason=f"ошибка Discord API: {e}")
             return
 
-        after = {invite.code: invite.uses or 0 for invite in current_invites}
         used_invite = None
-
         for invite in current_invites:
-            if invite.uses and invite.uses > before.get(invite.code, 0):
+            old_uses = old_cache.get(invite.code, 0)
+            new_uses = invite.uses or 0
+            if new_uses > old_uses:
                 used_invite = invite
                 break
 
-        # обновляем кэш на актуальный
-        self.invite_cache[guild.id] = after
+        # обновляем кеш в любом случае, чтобы следующий join сравнивался корректно
+        self.invite_cache[guild.id] = {inv.code: inv.uses or 0 for inv in current_invites}
 
-        await self._send_log(member, used_invite)
-
-    async def _send_log(self, member: discord.Member, invite: discord.Invite | None):
-        if not settings.INVITE_LOG_CHANNEL_ID:
+        if used_invite is None:
+            # либо vanity-ссылка/виджет, либо инвайт с истёкшим uses-счётчиком,
+            # либо что-то удалено между двумя проверками
+            await self._send_unknown(log_channel, member, reason=(
+                "это vanity-ссылка сервера или виджет — Discord API не отдаёт "
+                "для них статистику использований"
+            ))
             return
 
-        channel = member.guild.get_channel(settings.INVITE_LOG_CHANNEL_ID)
-        if channel is None:
-            log.warning("Канал логов приглашений %s не найден", settings.INVITE_LOG_CHANNEL_ID)
-            return
+        await self._send_known(log_channel, member, used_invite)
 
-        embed = discord.Embed(color=discord.Color(0x808080))
-        embed.set_author(name=str(member), icon_url=member.display_avatar.url)
+    async def _send_known(self, channel: discord.TextChannel, member: discord.Member, invite: discord.Invite):
+        joined_at = member.joined_at or datetime.now(timezone.utc)
+        joined_ts = int(joined_at.timestamp())
 
-        if invite is not None:
-            inviter = invite.inviter
-            embed.description = (
-                f"📥 {member.mention} зашёл по инвайту от "
-                f"{inviter.mention if inviter else 'неизвестно'}"
-            )
-            embed.add_field(name="Код инвайта", value=f"`{invite.code}`", inline=True)
-            embed.add_field(name="Использований", value=str(invite.uses or 0), inline=True)
+        inviter = invite.inviter
+        inviter_text = f"{inviter.mention} (`{inviter.id}`)" if inviter else "неизвестно (бот/удалён)"
+
+        if invite.created_at:
+            created_ts = int(invite.created_at.timestamp())
+            created_text = f"<t:{created_ts}:F> (<t:{created_ts}:R>)"
         else:
-            embed.description = (
-                f"📥 {member.mention} зашёл на сервер "
-                f"(не удалось определить инвайт — возможно, vanity-ссылка или виджет)"
-            )
+            created_text = "неизвестно"
 
-        try:
-            await channel.send(embed=embed)
-        except discord.HTTPException:
-            log.exception("Не удалось отправить лог приглашения в канал %s", channel.id)
+        embed = discord.Embed(
+            title="Новый участник по приглашению",
+            color=0x808080,
+            timestamp=joined_at,
+        )
+        embed.add_field(
+            name="Участник",
+            value=f"{member.mention} (`{member.id}`)",
+            inline=False,
+        )
+        embed.add_field(
+            name="Зашёл",
+            value=f"<t:{joined_ts}:F> (<t:{joined_ts}:R>)",
+            inline=False,
+        )
+        embed.add_field(
+            name="Приглашение",
+            value=f"`discord.gg/{invite.code}` — использований: {invite.uses}",
+            inline=False,
+        )
+        embed.add_field(name="Кем создано", value=inviter_text, inline=True)
+        embed.add_field(name="Когда создано", value=created_text, inline=True)
+        embed.set_thumbnail(url=member.display_avatar.url)
+
+        await channel.send(embed=embed)
+
+    async def _send_unknown(self, channel: discord.TextChannel, member: discord.Member, reason: str):
+        joined_at = member.joined_at or datetime.now(timezone.utc)
+        joined_ts = int(joined_at.timestamp())
+
+        embed = discord.Embed(
+            title="Новый участник — приглашение не определено",
+            description=f"Не удалось определить, по какой ссылке зашли: {reason}",
+            color=0x808080,
+            timestamp=joined_at,
+        )
+        embed.add_field(
+            name="Участник",
+            value=f"{member.mention} (`{member.id}`)",
+            inline=False,
+        )
+        embed.add_field(
+            name="Зашёл",
+            value=f"<t:{joined_ts}:F> (<t:{joined_ts}:R>)",
+            inline=False,
+        )
+        embed.set_thumbnail(url=member.display_avatar.url)
+
+        await channel.send(embed=embed)
 
 
 async def setup(bot: commands.Bot):
