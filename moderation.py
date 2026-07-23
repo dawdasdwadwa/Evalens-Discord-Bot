@@ -350,12 +350,27 @@ class Moderation(commands.Cog):
     @app_commands.describe(количество="Сколько сообщений удалить (1-100)")
     @is_staff()
     async def clear(self, interaction: discord.Interaction, количество: app_commands.Range[int, 1, 100]):
-        await interaction.response.defer(ephemeral=False)
+        # ephemeral=True здесь принципиально: обычный (не эфемерный) деферал создаёт
+        # РЕАЛЬНОЕ сообщение бота в этом же канале ("Evalens думает..."), которое затем
+        # попадает под purge() ниже и удаляется вместе со всем остальным. Когда Discord
+        # теряет это служебное сообщение, интеракция "ломается" и последующий
+        # followup.send() падает с 404 Unknown Message. Эфемерный деферал не создаёт
+        # обычного сообщения в канале, поэтому purge() его не заденет.
+        await interaction.response.defer(ephemeral=True)
         deleted = await interaction.channel.purge(limit=количество)
         embed = discord.Embed(title="🧹 Сообщения удалены", color=EMBED_COLOR, timestamp=datetime.now(timezone.utc))
         embed.add_field(name="Удалено сообщений", value=str(len(deleted)), inline=False)
         embed.add_field(name="Модератор", value=interaction.user.mention, inline=False)
-        await interaction.followup.send(embed=embed)
+        try:
+            # ephemeral=False — деферал был эфемерным (виден только модератору), но сам
+            # результат публикуем в канал открыто, чтобы было видно, кто и что почистил
+            await interaction.followup.send(embed=embed, ephemeral=False)
+        except discord.HTTPException:
+            log.warning(
+                "Не удалось отправить подтверждение очистки в канал %s (интеракция могла истечь) — "
+                "сообщения при этом были удалены (%d шт.)",
+                interaction.channel.id, len(deleted),
+            )
         log.info("%s удалил %s сообщений в #%s", interaction.user, len(deleted), interaction.channel)
 
     # ---------- обработчик ошибок слэш-команд когa ----------
@@ -367,10 +382,15 @@ class Moderation(commands.Cog):
         else:
             msg = f"Произошла ошибка: {error}"
             log.exception("Ошибка команды модерации", exc_info=error)
-        if interaction.response.is_done():
-            await interaction.followup.send(msg, ephemeral=True)
-        else:
-            await interaction.response.send_message(msg, ephemeral=True)
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except discord.HTTPException:
+            # интеракция уже недействительна (истекла/её исходное сообщение удалено) —
+            # сообщить пользователю об ошибке уже нельзя, но хотя бы не роняем задачу ещё раз
+            log.warning("Не удалось отправить сообщение об ошибке — интеракция уже недействительна")
 
     # ---------- фоновая задача: снятие временных банов ----------
     @tasks.loop(minutes=1)
