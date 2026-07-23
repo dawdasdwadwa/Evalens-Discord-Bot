@@ -130,6 +130,11 @@ class Verification(commands.Cog):
         for guild in self.bot.guilds:
             channel = guild.get_channel(settings.VERIFICATION_CHANNEL_ID)
             if channel is None:
+                log.warning(
+                    "Канал верификации %s не найден на сервере %s (%s) — панель не опубликована. "
+                    "Проверь ID канала и что у роли бота есть право View Channel на него.",
+                    settings.VERIFICATION_CHANNEL_ID, guild.name, guild.id,
+                )
                 continue
 
             # чистим старые сообщения бота в этом канале, чтобы не копились панели
