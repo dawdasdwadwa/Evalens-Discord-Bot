@@ -14,7 +14,7 @@ import settings
 
 log = logging.getLogger("evalens.moderation")
 
-TEMP_BANS_FILE = "temp_bans.json"
+TEMP_BANS_FILE = os.path.join(settings.DATA_DIR, "temp_bans.json")
 
 DURATION_RE = re.compile(r"^(\d+)\s*([smhdwSMHDW])$")
 UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
